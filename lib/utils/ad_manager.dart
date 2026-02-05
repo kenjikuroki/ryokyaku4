@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'purchase_manager.dart';
 
 class PreloadedAd {
   final BannerAd ad;
@@ -25,6 +26,11 @@ class AdManager {
   // final String _testAdUnitId = 'ca-app-pub-3940256099942544/6300978111';
 
   void preloadAd(String key) {
+    if (PurchaseManager.instance.isPremium.value) {
+      debugPrint('AdManager: Premium user, skipping ad preload: $key');
+      return;
+    }
+
     if (_ads.containsKey(key)) {
       // Already preloading or loaded
       return;
@@ -62,12 +68,17 @@ class AdManager {
   }
   
   /// Returns the ad and removes it from manager (transfer ownership)
-  /// If [keep] is true, it retains in manager (shared ownership/singleton usage like Home).
+  /// If [keep] is true, it retains in manager (shared ownership).
   PreloadedAd? consumeAd(String key, {bool keep = false}) {
     if (keep) {
       return _ads[key];
     }
-    return _ads.remove(key);
+    final ad = _ads.remove(key);
+    // Auto-preload for next usage after consumption
+    if (ad != null) {
+      preloadAd(key);
+    }
+    return ad;
   }
 
   // Interstitial Ad
@@ -77,6 +88,10 @@ class AdManager {
   final String _interstitialAdUnitId = 'ca-app-pub-3331079517737737/8193117453';
 
   void preloadInterstitial() {
+    if (PurchaseManager.instance.isPremium.value) {
+      return; // Skip for premium
+    }
+
     // If already loaded or loading, skip? 
     // Simplified: just try to load if null.
     if (_interstitialAd != null) return;
@@ -100,6 +115,12 @@ class AdManager {
   /// Shows the interstitial ad if available.
   /// [onComplete] is called when the ad is dismissed or if it fails to show/load.
   void showInterstitial({required VoidCallback onComplete}) {
+    if (PurchaseManager.instance.isPremium.value) {
+      debugPrint('AdManager: Premium user, skipping interstitial show.');
+      onComplete();
+      return;
+    }
+
     if (_interstitialAd == null) {
       debugPrint('AdManager: No interstitial ready, skipping.');
       onComplete();

@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import '../utils/ad_manager.dart';
+import '../utils/purchase_manager.dart';
 import 'banner_ad_placeholder.dart';
 
 class AdBanner extends StatefulWidget {
@@ -30,6 +31,13 @@ class _AdBannerState extends State<AdBanner> {
   void initState() {
     super.initState();
     _initAd();
+    
+    // Listen for premium purchase to hide immediately
+    PurchaseManager.instance.isPremium.addListener(_onPremiumChanged);
+  }
+
+  void _onPremiumChanged() {
+    if (mounted) setState(() {});
   }
 
   void _initAd() {
@@ -82,6 +90,7 @@ class _AdBannerState extends State<AdBanner> {
 
   @override
   void dispose() {
+    PurchaseManager.instance.isPremium.removeListener(_onPremiumChanged);
     _loadingNotifier?.removeListener(_onPreloadedAdChange);
     
     if (!widget.keepAlive) {
@@ -92,6 +101,12 @@ class _AdBannerState extends State<AdBanner> {
 
   @override
   Widget build(BuildContext context) {
+    if (PurchaseManager.instance.isPremium.value) {
+      return const SizedBox.shrink();
+    }
+
+    // AdWidget strictly requires the ad to be loaded if we want to show it.
+    // However, some versions of the plugin are sensitive to the ad state before building.
     if (_isLoaded && _bannerAd != null) {
       return SizedBox(
         width: _bannerAd!.size.width.toDouble(),
@@ -99,6 +114,7 @@ class _AdBannerState extends State<AdBanner> {
         child: AdWidget(ad: _bannerAd!),
       );
     }
+
     return const BannerAdPlaceholder();
   }
 }

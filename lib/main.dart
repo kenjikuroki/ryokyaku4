@@ -10,6 +10,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 import 'widgets/ad_banner.dart';
 import 'utils/ad_manager.dart';
+import 'utils/purchase_manager.dart';
+import 'widgets/premium_unlock_card.dart';
+import 'widgets/special_offer_dialog.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 
@@ -130,6 +133,18 @@ class PrefsHelper {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getStringList(_keyWeakQuestions) ?? [];
   }
+
+  static const String _keyHasSeenSpecialOffer = 'has_seen_special_offer';
+
+  static Future<bool> hasSeenSpecialOffer() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyHasSeenSpecialOffer) ?? false;
+  }
+
+  static Future<void> setHasSeenSpecialOffer() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyHasSeenSpecialOffer, true);
+  }
 }
 
 class QuizData {
@@ -222,8 +237,9 @@ class _HomePageState extends State<HomePage> {
     final status = await AppTrackingTransparency.requestTrackingAuthorization();
     debugPrint("ATT Status: $status");
 
-    // 3. Initialize Ads
+    // 3. Initialize Ads and Purchase Manager
     await MobileAds.instance.initialize();
+    await PurchaseManager.instance.init();
     
     // 4. Preload Ads
     AdManager.instance.preloadAd('quiz');
@@ -404,6 +420,8 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                   const SizedBox(height: 20),
+                  
+                  
                   // Part 1: 道路運送法
                   _MenuButton(
                     title: "道路運送法",
@@ -532,6 +550,10 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 40),
+                  
+                  // Premium Unlock Card
+                  const PremiumUnlockCard(),
                   const SizedBox(height: 40),
                 ],
               ),
@@ -778,9 +800,26 @@ class _QuizPageState extends State<QuizPage> {
       
       if (shouldShow) {
         AdManager.instance.showInterstitial(
-          onComplete: () {
+          onComplete: () async {
             if (mounted) {
-              _navigateToResult();
+              // Check Special Offer Conditions
+              final isPremium = PurchaseManager.instance.isPremium.value;
+              final hasSeen = await PrefsHelper.hasSeenSpecialOffer();
+              final now = DateTime.now();
+              final limitDate = DateTime(2026, 3, 1);
+              
+              if (!isPremium && !hasSeen && now.isBefore(limitDate)) {
+                 await showDialog(
+                   context: context,
+                   barrierDismissible: false,
+                   builder: (reqContext) => const SpecialOfferDialog(),
+                 );
+                 await PrefsHelper.setHasSeenSpecialOffer();
+              }
+
+              if (mounted) {
+                _navigateToResult();
+              }
             }
           },
         );
@@ -809,15 +848,6 @@ class _QuizPageState extends State<QuizPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.close, color: Colors.black54),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-      ),
-      extendBodyBehindAppBar: true, 
       body: Column(
         children: [
           Expanded(
@@ -826,110 +856,130 @@ class _QuizPageState extends State<QuizPage> {
               color: _backgroundColor,
               child: SafeArea(
                 bottom: false,
-                child: Stack(
+                child: Column(
                   children: [
-                    Column(
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
-                          child: Column(
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    "第$_currentIndex問",
-                                    style: const TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.black87,
-                                    ),
-                                  ),
-                                  Text(
-                                    "$_currentIndex / ${widget.totalQuestions}",
-                                    style: const TextStyle(
-                                      fontSize: 16,
-                                      color: Colors.grey,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(4),
-                                child: LinearProgressIndicator(
-                                  value: _currentIndex / widget.totalQuestions,
-                                  minHeight: 8,
-                                  backgroundColor: Colors.grey[300],
-                                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.orange),
-                                ),
-                              ),
-                            ],
+                    // Custom Header
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.arrow_back_ios_new, color: Colors.black87),
+                            onPressed: () => Navigator.of(context).pop(),
                           ),
-                        ),
-                        Expanded(
-                          child: AppinioSwiper(
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      "第$_currentIndex問",
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.black87,
+                                      ),
+                                    ),
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 8.0),
+                                      child: Text(
+                                        "$_currentIndex / ${widget.totalQuestions}",
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(2),
+                                  child: LinearProgressIndicator(
+                                    value: _currentIndex / widget.totalQuestions,
+                                    minHeight: 4,
+                                    backgroundColor: Colors.grey[300],
+                                    valueColor: const AlwaysStoppedAnimation<Color>(Colors.orange),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                        ],
+                      ),
+                    ),
+                    // Swiper and Feedback Overlay
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          AppinioSwiper(
                             controller: controller,
                             cardCount: widget.quizzes.length,
                             loop: false,
                             backgroundCardCount: 0,
                             isDisabled: !_isAnswered, // Block swipe until answered
-                            swipeOptions: const SwipeOptions.all(), onSwipeEnd: _handleSwipeEnd,
+                            swipeOptions: const SwipeOptions.all(),
+                            onSwipeEnd: _handleSwipeEnd,
                             cardBuilder: (context, index) {
                               return _buildCard(widget.quizzes[index], index);
                             },
                           ),
-                        ),
-                        const SizedBox(height: 20),
-                      ],
-                    ),
-                    
-                    // Floating Feedback Overlay
-                    IgnorePointer(
-                      ignoring: true, 
-                      child: AnimatedOpacity(
-                          opacity: _showFeedback ? 1.0 : 0.0,
-                          duration: const Duration(milliseconds: 300),
-                          child: Center(
-                              child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
-                                  decoration: BoxDecoration(
-                                      color: Colors.white.withValues(alpha: 0.95),
-                                      borderRadius: BorderRadius.circular(20),
-                                      boxShadow: [
+                          
+                          // Floating Feedback Overlay
+                          if (_showFeedback)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: AnimatedOpacity(
+                                  opacity: _showFeedback ? 1.0 : 0.0,
+                                  duration: const Duration(milliseconds: 300),
+                                  child: Center(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(alpha: 0.95),
+                                        borderRadius: BorderRadius.circular(20),
+                                        boxShadow: [
                                           BoxShadow(
-                                              color: Colors.black.withValues(alpha: 0.1),
-                                              blurRadius: 20,
-                                              offset: const Offset(0, 10),
+                                            color: Colors.black.withValues(alpha: 0.1),
+                                            blurRadius: 20,
+                                            offset: const Offset(0, 10),
                                           ),
-                                      ],
-                                  ),
-                                  child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
+                                        ],
+                                      ),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
                                           Icon(
-                                              _isCorrectFeedback ? Icons.check_circle : Icons.cancel,
-                                              color: _isCorrectFeedback ? Colors.green : Colors.red,
-                                              size: 64,
+                                            _isCorrectFeedback ? Icons.check_circle : Icons.cancel,
+                                            color: _isCorrectFeedback ? Colors.green : Colors.red,
+                                            size: 64,
                                           ),
                                           const SizedBox(height: 16),
                                           Text(
-                                              _isCorrectFeedback ? "正解！" : "不正解...",
-                                              style: TextStyle(
-                                                  fontSize: 32,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: _isCorrectFeedback ? Colors.green[800] : Colors.red[800],
-                                              ),
+                                            _isCorrectFeedback ? "正解！" : "不正解...",
+                                            style: TextStyle(
+                                              fontSize: 32,
+                                              fontWeight: FontWeight.bold,
+                                              color: _isCorrectFeedback ? Colors.green[800] : Colors.red[800],
+                                            ),
                                           ),
-                                      ],
+                                        ],
+                                      ),
+                                    ),
                                   ),
+                                ),
                               ),
-                          ),
+                            ),
+                        ],
                       ),
-                  ),
-                ],
-              ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
               ),
             ),
           ),
@@ -938,7 +988,7 @@ class _QuizPageState extends State<QuizPage> {
             top: false,
             child: SizedBox(
                height: 60,
-               child: AdBanner(adKey: 'quiz', keepAlive: true),
+               child: AdBanner(adKey: 'quiz'),
             ),
           ),
         ],
@@ -953,7 +1003,7 @@ class _QuizPageState extends State<QuizPage> {
 
     return Container(
       key: ValueKey(cardIndex),
-      margin: const EdgeInsets.all(20),
+      margin: const EdgeInsets.all(12),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: Colors.white,
