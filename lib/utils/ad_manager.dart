@@ -20,10 +20,14 @@ class AdManager {
 
   final Map<String, PreloadedAd> _ads = {};
 
-  final String _adUnitId = 'ca-app-pub-3331079517737737/3934308248';
-  
-  // Test ID for debug (optional use)
-  // final String _testAdUnitId = 'ca-app-pub-3940256099942544/6300978111';
+  // --- Ad Settings ---
+  // 本番環境に移行する際は、このフラグを false に変更してください
+  static const bool useTestAds = true;
+
+  // Banner IDs
+  static const String _prodAdUnitId = 'ca-app-pub-3331079517737737/1292974017';
+  static const String _testBannerAdUnitId = 'ca-app-pub-3940256099942544/6300978111';
+  String get _adUnitId => useTestAds ? _testBannerAdUnitId : _prodAdUnitId;
 
   void preloadAd(String key) {
     if (PurchaseManager.instance.isPremium.value) {
@@ -84,8 +88,10 @@ class AdManager {
   // Interstitial Ad
   InterstitialAd? _interstitialAd;
   
-  // Real ID from user screenshot
-  final String _interstitialAdUnitId = 'ca-app-pub-3331079517737737/8193117453';
+  // Interstitial IDs
+  static const String _prodInterstitialAdUnitId = 'ca-app-pub-3331079517737737/8460513016';
+  static const String _testInterstitialAdUnitId = 'ca-app-pub-3940256099942544/1033173712';
+  String get _interstitialAdUnitId => useTestAds ? _testInterstitialAdUnitId : _prodInterstitialAdUnitId;
 
   void preloadInterstitial() {
     if (PurchaseManager.instance.isPremium.value) {

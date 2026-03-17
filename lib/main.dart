@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:app_tracking_transparency/app_tracking_transparency.dart';
+import 'dart:io';
 
 import 'package:in_app_review/in_app_review.dart';
 
@@ -13,7 +14,9 @@ import 'utils/ad_manager.dart';
 import 'utils/purchase_manager.dart';
 import 'widgets/premium_unlock_card.dart';
 import 'widgets/special_offer_dialog.dart';
+import 'widgets/premium_upgrade_dialog.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 
 Future<void> main() async {
@@ -26,6 +29,12 @@ Future<void> main() async {
   
   runApp(const MyApp());
 }
+
+// -----------------------------------------------------------------------------
+// 0. Enums
+// -----------------------------------------------------------------------------
+
+enum QuizMode { shuffle, sequential }
 
 // -----------------------------------------------------------------------------
 // 1. Data Models & Helpers
@@ -222,34 +231,57 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _weaknessCount = 0;
   bool _isLoading = true;
+  QuizMode _currentMode = QuizMode.shuffle;
 
   @override
   void initState() {
     super.initState();
     _initializeApp();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _requestTrackingPermissionIfNeeded();
+    });
   }
   
   Future<void> _initializeApp() async {
-    // 1. Wait for 1 second
-    await Future.delayed(const Duration(seconds: 1));
+    try {
+      await MobileAds.instance.initialize();
+      await PurchaseManager.instance.init();
 
-    // 2. Request ATT
-    final status = await AppTrackingTransparency.requestTrackingAuthorization();
-    debugPrint("ATT Status: $status");
+      AdManager.instance.preloadAd('quiz');
 
-    // 3. Initialize Ads and Purchase Manager
-    await MobileAds.instance.initialize();
-    await PurchaseManager.instance.init();
-    
-    // 4. Preload Ads
-    AdManager.instance.preloadAd('quiz');
+      await QuizData.load();
+      await _loadUserData();
+    } catch (e, st) {
+      debugPrint('App initialization failed: $e');
+      debugPrintStack(stackTrace: st);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
 
-    await QuizData.load();
-    await _loadUserData();
-    if (mounted) {
-      setState(() {
-        _isLoading = false;
-      });
+  Future<void> _requestTrackingPermissionIfNeeded() async {
+    if (!Platform.isIOS) return;
+
+    try {
+      final status = await AppTrackingTransparency.trackingAuthorizationStatus;
+      if (status != TrackingStatus.notDetermined) {
+        debugPrint('ATT Status: $status');
+        return;
+      }
+
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (!mounted) return;
+
+      final updatedStatus =
+          await AppTrackingTransparency.requestTrackingAuthorization();
+      debugPrint('ATT Status: $updatedStatus');
+    } catch (e, st) {
+      debugPrint('ATT request failed: $e');
+      debugPrintStack(stackTrace: st);
     }
   }
   
@@ -271,7 +303,7 @@ class _HomePageState extends State<HomePage> {
         questionsToUse = questionsToUse.take(10).toList();
       }
     } else {
-      questionsToUse.shuffle();
+      // Sequential mode: Just use original order
     }
     
     AdManager.instance.preloadAd('result');
@@ -314,7 +346,7 @@ class _HomePageState extends State<HomePage> {
     _loadUserData();
   }
 
-  void _startQuizByCategory(BuildContext context, String partKey) {
+  void _startQuizByCategory(BuildContext context, String partKey, {bool isWeaknessOnly = false}) async {
     List<Quiz> quizzes;
     String highScoreKey;
     switch(partKey) {
@@ -326,42 +358,65 @@ class _HomePageState extends State<HomePage> {
       default: quizzes = []; highScoreKey = '';
     }
     
+    if (isWeaknessOnly) {
+      final weakTexts = await PrefsHelper.getWeakQuestions();
+      quizzes = quizzes.where((q) => weakTexts.contains(q.question)).toList();
+    }
+
     if (quizzes.isEmpty) {
        ScaffoldMessenger.of(context).showSnackBar(
-         const SnackBar(content: Text('問題データがまだありません')),
+         const SnackBar(content: Text("問題データがまだありません")),
        );
        return;
     }
-    _startQuiz(context, quizzes, highScoreKey);
+    _startQuiz(
+      context, 
+      quizzes, 
+      highScoreKey, 
+      isRandom10: !isWeaknessOnly && _currentMode == QuizMode.shuffle,
+    );
+  }
+
+  void _showPremiumDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => PremiumUpgradeDialog(
+        title: 'プレミアムアップグレード',
+        buyNowText: '今すぐ購入',
+        cancelText: 'キャンセル',
+        unlockSequential: '「連続」モードの解放',
+        unlockSequentialDesc: '1問目から順番にすべての問題を解くことができます。',
+        hideAds: '広告を完全に非表示',
+        hideAdsDesc: 'アプリ内のあらゆる広告（バナー、動画など）を非表示にします。',
+        onPurchase: () {
+          Navigator.pop(context);
+          PurchaseManager.instance.buyPremium();
+        },
+      ),
+    );
+  }
+
+  void _showCategoryReview() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => _CategoryReviewModal(
+        onCategoryTap: (partKey) {
+          Navigator.pop(context);
+          _startQuizByCategory(context, partKey, isWeaknessOnly: true);
+        },
+      ),
+    );
   }
 
   void _showReferralDialog(BuildContext context) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.touch_app, color: Colors.blueAccent),
-            SizedBox(width: 8),
-            Text("姉妹アプリへ移動", style: TextStyle(fontWeight: FontWeight.bold)),
-          ],
-        ),
-        content: const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              "「運行管理者 貨物 スワイプ一問一答」のページを開きますか？",
-              style: TextStyle(fontSize: 16, height: 1.5),
-            ),
-            SizedBox(height: 12),
-            Text(
-              "※App Storeへ遷移します",
-              style: TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-          ],
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text("姉妹アプリが登場！", style: TextStyle(fontWeight: FontWeight.bold)),
+        content: const Text("より高速に学習できるスワイプ形式の姉妹アプリをチェックしてみませんか？"),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
@@ -395,31 +450,52 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
+        title: Text(
           "運行管理者 旅客 4択問題",
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+          style: GoogleFonts.notoSansJp(fontWeight: FontWeight.bold, color: Colors.white),
         ),
         centerTitle: true,
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const SizedBox(height: 10),
-                  const Text(
-                    "スキマ時間でサクサク合格！4択問題",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
+      body: ValueListenableBuilder<bool>(
+        valueListenable: PurchaseManager.instance.isPremium,
+        builder: (context, isPremium, child) {
+          return Column(
+            children: [
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 16),
+                      // Pill Mode Toggle
+                      Center(
+                        child: _PillModeToggle(
+                          currentMode: _currentMode,
+                          isPremium: isPremium,
+                          onChanged: (mode) {
+                            if (mode == QuizMode.sequential && !isPremium) {
+                              _showPremiumDialog();
+                            } else {
+                              setState(() {
+                                _currentMode = mode;
+                              });
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      
+                      Text(
+                        "スキマ時間でサクサク合格！4択問題",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
                   
                   
                   // Part 1: 道路運送法
@@ -469,9 +545,9 @@ class _HomePageState extends State<HomePage> {
 
                   // Weakness Review
                   ElevatedButton.icon(
-                    onPressed: _weaknessCount > 0 ? () => _startWeaknessReview(context) : null,
+                    onPressed: () => _showCategoryReview(),
                     icon: const Icon(Icons.refresh),
-                    label: Text("苦手を復習する ($_weaknessCount問)"),
+                    label: Text("苦手を復習する ( $_weaknessCount問 )"),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.redAccent,
                       foregroundColor: Colors.white,
@@ -518,22 +594,22 @@ class _HomePageState extends State<HomePage> {
                                 child: const Icon(Icons.touch_app, color: Colors.blueAccent, size: 32),
                               ),
                               const SizedBox(width: 16),
-                              const Expanded(
+                              Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
                                       "スワイプ形式で高速学習",
-                                      style: TextStyle(
+                                      style: const TextStyle(
                                         fontSize: 14,
                                         color: Colors.grey,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
-                                    SizedBox(height: 4),
+                                    const SizedBox(height: 4),
                                     Text(
                                       "サクサク解ける\n姉妹アプリはこちら",
-                                      style: TextStyle(
+                                      style: const TextStyle(
                                         fontSize: 18,
                                         fontWeight: FontWeight.bold,
                                         color: Colors.black87,
@@ -550,18 +626,281 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 40),
-                  
-                  // Premium Unlock Card
-                  const PremiumUnlockCard(),
-                  const SizedBox(height: 40),
+                   const SizedBox(height: 24),
+                   
+                   // Premium Unlock Card
+                   PremiumUnlockCard(onTap: () => _showPremiumDialog()),
+                   const SizedBox(height: 40),
                 ],
               ),
             ),
           ),
-          
+           if (isPremium) const SizedBox(height: 20),
+         ],
+       );
+    },
+   ),
+  );
+ }
+}
 
+// -----------------------------------------------------------------------------
+// 2-1. Home Page Widgets
+// -----------------------------------------------------------------------------
+
+class _PillModeToggle extends StatelessWidget {
+  final QuizMode currentMode;
+  final bool isPremium;
+  final ValueChanged<QuizMode> onChanged;
+
+  const _PillModeToggle({
+    required this.currentMode,
+    required this.isPremium,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 200,
+      height: 48,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Stack(
+        children: [
+          AnimatedAlign(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeInOut,
+            alignment: currentMode == QuizMode.shuffle ? Alignment.centerLeft : Alignment.centerRight,
+            child: Container(
+              width: 100,
+              height: 48,
+              decoration: BoxDecoration(
+                color: const Color(0xFF2C3E50),
+                borderRadius: BorderRadius.circular(24),
+              ),
+            ),
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => onChanged(QuizMode.shuffle),
+                  behavior: HitTestBehavior.opaque,
+                  child: Center(
+                    child: Icon(
+                      Icons.shuffle,
+                      color: currentMode == QuizMode.shuffle ? Colors.white : Colors.grey,
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: GestureDetector(
+                  onTap: () => onChanged(QuizMode.sequential),
+                  behavior: HitTestBehavior.opaque,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Center(
+                        child: Icon(
+                          Icons.format_list_numbered,
+                          color: currentMode == QuizMode.sequential ? Colors.white : Colors.grey,
+                        ),
+                      ),
+                      if (!isPremium)
+                        const Center(
+                          child: Icon(
+                            Icons.lock,
+                            size: 32,
+                            color: Colors.black45,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ],
+      ),
+    );
+  }
+}
+
+class _CategoryReviewModal extends StatefulWidget {
+  final Function(String) onCategoryTap;
+
+  const _CategoryReviewModal({required this.onCategoryTap});
+
+  @override
+  State<_CategoryReviewModal> createState() => _CategoryReviewModalState();
+}
+
+class _CategoryReviewModalState extends State<_CategoryReviewModal> {
+  final Map<String, int> _weaknessCounts = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCounts();
+  }
+
+  Future<void> _loadCounts() async {
+    final weakTexts = await PrefsHelper.getWeakQuestions();
+    final counts = <String, int>{};
+    
+    // Road Transport Law
+    counts['part1'] = QuizData.part1.where((q) => weakTexts.contains(q.question)).length;
+    counts['part2'] = QuizData.part2.where((q) => weakTexts.contains(q.question)).length;
+    counts['part3'] = QuizData.part3.where((q) => weakTexts.contains(q.question)).length;
+    counts['part4'] = QuizData.part4.where((q) => weakTexts.contains(q.question)).length;
+    counts['part5'] = QuizData.part5.where((q) => weakTexts.contains(q.question)).length;
+
+    setState(() {
+      _weaknessCounts.addAll(counts);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            "カテゴリーを選択",
+            style: GoogleFonts.lora(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 24),
+          _CategoryCard(
+            title: "道路運送法",
+            icon: Icons.directions_bus,
+            iconColor: Colors.blueAccent,
+            count: _weaknessCounts['part1'] ?? 0,
+            onTap: () => widget.onCategoryTap('part1'),
+          ),
+          const SizedBox(height: 12),
+          _CategoryCard(
+            title: "道路運送車両法",
+            icon: Icons.build,
+            iconColor: Colors.orange,
+            count: _weaknessCounts['part2'] ?? 0,
+            onTap: () => widget.onCategoryTap('part2'),
+          ),
+          const SizedBox(height: 12),
+          _CategoryCard(
+            title: "道路交通法",
+            icon: Icons.traffic,
+            iconColor: Colors.redAccent,
+            count: _weaknessCounts['part3'] ?? 0,
+            onTap: () => widget.onCategoryTap('part3'),
+          ),
+          const SizedBox(height: 12),
+          _CategoryCard(
+            title: "労働基準法 & 改善基準告示",
+            icon: Icons.work_history,
+            iconColor: Colors.green,
+            count: _weaknessCounts['part4'] ?? 0,
+            onTap: () => widget.onCategoryTap('part4'),
+          ),
+          const SizedBox(height: 12),
+          _CategoryCard(
+            title: "実務上の知識及び能力",
+            icon: Icons.map,
+            iconColor: Colors.purple,
+            count: _weaknessCounts['part5'] ?? 0,
+            onTap: () => widget.onCategoryTap('part5'),
+          ),
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+}
+
+class _CategoryCard extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final Color iconColor;
+  final int count;
+  final VoidCallback onTap;
+
+  const _CategoryCard({
+    required this.title,
+    required this.icon,
+    required this.iconColor,
+    required this.count,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade100),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: iconColor.withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(icon, color: iconColor, size: 24),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    "$count問",
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Icon(Icons.chevron_right, color: Colors.grey, size: 16),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
